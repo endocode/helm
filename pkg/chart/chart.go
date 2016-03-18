@@ -64,6 +64,11 @@ type Chart struct {
 	loader chartLoader
 }
 
+type LoadedChart struct {
+	Chartfile *Chartfile  `json:"chart_file"`
+	Members []*ChartMember  `json:"members"`
+}
+
 // Close the chart.
 //
 // Charts should always be closed when no longer needed.

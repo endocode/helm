@@ -19,8 +19,8 @@ package expander
 import (
 	"bytes"
 	"fmt"
+	"encoding/json"
 	"log"
-	"os"
 	"os/exec"
 
 	"github.com/ghodss/yaml"
@@ -118,10 +118,53 @@ func (eResponse *ExpansionResponse) Unmarshal() (*ExpansionResult, error) {
 
 // ExpandTemplate passes the given configuration to the expander and returns the
 // expanded configuration as a string on success.
-func (e *expander) ExpandTemplate(template *common.Template) (string, error) {
+func (e *expander) ExpandTemplate(request *common.Template) (string, error) {
+	if request.ChartInvocation == nil {
+		message := fmt.Sprintf("Request does not have invocation field")
+		return "", fmt.Errorf("error processing request: %s", message)
+	}
+	if request.Chart == nil {
+		message := fmt.Sprintf("Request does not have chart field")
+		return "", fmt.Errorf("error processing request: %s", message)
+	}
+
+	charInv := request.ChartInvocation
+	chartFile := request.Chart.Chartfile
+	chartMembers := request.Chart.Members
+	schemaName := chartInv.Type + ".schema"
+
+	if chartFile.Expander == nil {
+		message := fmt.Sprintf("Chart JSON does not have expander field")
+		return "", fmt.Errorf("error expanding chart %s: %s", chartInv.Name, message)
+	}
+
+	if chartFile.Expander.Name != "Expandybird" {
+		message := fmt.Sprintf("Expandybird cannot do this kind of expansion: ", chartFile.Expander)
+		return "", fmt.Errorf("error expanding chart %s: %s", chartInv.Name, message)
+	}
+
 	if e.ExpansionBinary == "" {
 		message := fmt.Sprintf("expansion binary cannot be empty")
-		return "", fmt.Errorf("error expanding template %s: %s", template.Name, message)
+		return "", fmt.Errorf("error expanding chart %s: %s", chartInv.Name, message)
+	}
+
+	entrypointIndex := -1
+	schemaIndex := -1
+	for i, f := range chartMembers {
+		if f.Path == chartFile.Expander.Entrypoint {
+			entrypointIndex = i
+		}
+		if f.Path == chartFile.Schema {
+			schemaIndex = i
+		}
+	}
+	if entrypointIndex == -1 {
+		message := fmt.Sprintf("The entrypoint in the chart.yaml cannot be found: %s", chartFile.Expander.Entrypoint)
+		return "", fmt.Errorf("error expanding chart %s: %s", chartInv.Name, message)
+	}
+	if schemaIndex == -1 {
+		message := fmt.Sprintf("The schema in the chart.yaml cannot be found: %s", chartFile.Schema)
+		return "", fmt.Errorf("error expanding chart %s: %s", chartInv.Name, message)
 	}
 
 	// Those are automatically increasing buffers, so writing arbitrary large
@@ -129,19 +172,37 @@ func (e *expander) ExpandTemplate(template *common.Template) (string, error) {
 	var stdout bytes.Buffer
 	var stderr bytes.Buffer
 
+	// Now we convert the new chart representation into the form that classic Expandybird takes.
+
+	chartInvJson, err := json.Marshal(chartInv)
+	if err != nil {
+		return "", fmt.Errorf("error marshalling chart invocation %s: %s", chartInv.Name, err)
+	}
+	content := "{ \"resources\": [" + string(chartInvJson) + "] }"
+
 	cmd := &exec.Cmd{
 		Path: e.ExpansionBinary,
 		// Note, that binary name still has to be passed argv[0].
-		Args: []string{e.ExpansionBinary, template.Content},
-		// TODO(vagababov): figure out whether do we even need "PROJECT" and
-		// "DEPLOYMENT_NAME" variables here.
-		Env:    append(os.Environ(), "PROJECT="+template.Name, "DEPLOYMENT_NAME="+template.Name),
+		Args: []string{e.ExpansionBinary, content},
 		Stdout: &stdout,
 		Stderr: &stderr,
 	}
 
-	for _, imp := range template.Imports {
-		cmd.Args = append(cmd.Args, imp.Name, imp.Path, imp.Content)
+	if chartFile.Schema != "" {
+		cmd.Env = []string{"VALIDATE_SCHEMA=1"}
+	}
+
+	for i, f := range chartMembers {
+		name := f.Path
+		path := f.Path
+		if i == entrypointIndex {
+			// This is how expandybird identifies the entrypoint.
+			name = chartInv.Type
+		} else if i == schemaIndex {
+			// Doesn't matter what it was originally called, expandybird expects to find it here.
+			name = schemaName
+		}
+		cmd.Args = append(cmd.Args, name, path, string(f.Content))
 	}
 
 	if err := cmd.Start(); err != nil {
@@ -154,7 +215,7 @@ func (e *expander) ExpandTemplate(template *common.Template) (string, error) {
 	log.Printf("Expansion process: pid: %d SysTime: %v UserTime: %v", cmd.ProcessState.Pid(),
 		cmd.ProcessState.SystemTime(), cmd.ProcessState.UserTime())
 	if stderr.String() != "" {
-		return "", fmt.Errorf("error expanding template %s: %s", template.Name, stderr.String())
+		return "", fmt.Errorf("error expanding chart %s: %s", chartInv.Name, stderr.String())
 	}
 
 	return stdout.String(), nil

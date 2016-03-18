@@ -18,6 +18,7 @@ package common
 
 import (
 	"time"
+	"github.com/kubernetes/helm/pkg/chart"
 )
 
 // SchemaImport represents an import as declared in a schema file.
@@ -101,16 +102,8 @@ type Manifest struct {
 // Manager expands a Template into a Configuration, which
 // describes the set in a form that can be instantiated.
 type Template struct {
-	Name    string        `json:"name"`
-	Content string        `json:"content"`
-	Imports []*ImportFile `json:"imports"`
-}
-
-// ImportFile describes a base64 encoded file imported by a Template.
-type ImportFile struct {
-	Name    string `json:"name,omitempty"`
-	Path    string `json:"path,omitempty"` // Actual URL for the file
-	Content string `json:"content"`
+	ChartInvocation *Resource `json:"chart_invocation"`
+	Chart *chart.LoadedChart `json:"chart"`
 }
 
 // Configuration describes a set of resources in a form

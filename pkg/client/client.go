@@ -192,3 +192,4 @@ func (e *HTTPError) Error() string {
 func (e *HTTPError) String() string {
 	return e.Error()
 }
+
